@@ -158,7 +158,7 @@
 const ROLE_LABELS = {
   user: ['ユーザー', 'ユーザ', 'あなた', '自分', 'User', 'You', 'Prompt', 'Me'],
   model: ['モデル', 'Gemini', 'Model', 'Response', 'AI', 'Assistant', '回答', '応答'],
-  thinking: ['Thinking', 'Thoughts', 'Thought', '思考', '思考プロセス', 'Show thinking'],
+  thinking: ['Thinking', 'Thoughts', 'Thought', 'Thinking_process', '思考', '思考プロセス', 'Show thinking'],
 };
 const LABEL_TO_ROLE = new Map();
 for (const [role, labels] of Object.entries(ROLE_LABELS)) {
@@ -182,32 +182,154 @@ function isAck(text) {
     /(受領|承知|了解|かしこまりました|理解しました|把握しました|確認しました)/.test(text);
 }
 
-function parseSession(text) {
-  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+// <|#|model|#|isSelected> … <|#|/model|#|> 形式のタグ
+const TAG_SPLIT_RE = /(<\|#\|\/?[A-Za-z_]+\|#\|[^>]*>)/;
+const TAG_RE = /^<\|#\|(\/?)([A-Za-z_]+)\|#\|([^>]*)>$/;
+const tagRole = name => LABEL_TO_ROLE.get(name.toLowerCase()) || 'preface';
+
+function splitTurns(text) {
   const turns = [];
   let cur = null;
-  for (const line of lines) {
+  const push = t => { turns.push(t); return t; };
+
+  if (TAG_SPLIT_RE.test(text)) {
+    for (const part of text.split(TAG_SPLIT_RE)) {
+      const m = part.match(TAG_RE);
+      if (m) {
+        cur = m[1] ? null : push({ role: tagRole(m[2]), attrs: m[3].trim().split(/\s+/).filter(Boolean), lines: [] });
+        continue;
+      }
+      if (!part.trim()) continue;
+      if (!cur) cur = push({ role: 'preface', lines: [] });
+      cur.lines.push(...part.split('\n'));
+    }
+    return turns;
+  }
+
+  for (const line of text.split('\n')) {
     const m = line.match(LABEL_RE);
     const h = !m && line.match(LABEL_HEAD_RE);
     if (m || h) {
       const label = m ? m[1] : (h[1] || h[2]);
-      cur = { role: LABEL_TO_ROLE.get(label.toLowerCase()), lines: [] };
-      turns.push(cur);
+      cur = push({ role: LABEL_TO_ROLE.get(label.toLowerCase()), lines: [] });
       if (m && m[2].trim()) cur.lines.push(m[2]);
       continue;
     }
-    if (!cur) { cur = { role: 'preface', lines: [] }; turns.push(cur); }
+    if (!cur) cur = push({ role: 'preface', lines: [] });
     cur.lines.push(line);
   }
+  return turns;
+}
+
+// 再生成された候補が並んでいる場合は isSelected の付いたものだけ残す
+function keepSelected(turns) {
   const out = [];
+  let group = [];
+  const flush = () => {
+    const sel = group.filter(t => t.attrs && t.attrs.includes('isSelected'));
+    out.push(...(sel.length ? sel : group));
+    group = [];
+  };
   for (const t of turns) {
+    if (t.role === 'model') { group.push(t); continue; }
     if (t.role === 'thinking') continue;
+    flush();
+    out.push(t);
+  }
+  flush();
+  return out;
+}
+
+// ---------- 選択肢 ----------
+
+// 「1. 」「A. 」「①」「**B.**」で始まる行
+const ITEM_RE = /^\s*(?:[-*・]\s+)?(?:\*\*)?\s*(?:([0-9０-９]{1,2}|[A-Za-zＡ-Ｚａ-ｚ])\s*[.．)）:：、]|([①-⑳]))\s*(.+)$/;
+const CHOICE_HEAD_RE = /(選択肢|選択|分岐|次の行動|行動|どうする|どうします|展開)/;
+const SEP_RE = /^\s*([-*＊_]\s*){3,}$/;
+const plain = s => s.replace(/\*\*/g, '').replace(/^[\s#【\[]+|[\s】\]:：]+$/g, '');
+
+function normKey(k) {
+  k = k.replace(/[０-９Ａ-Ｚａ-ｚ]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+  if (/[①-⑳]/.test(k)) k = String(k.charCodeAt(0) - 0x2460 + 1);
+  return k.toUpperCase().replace(/^0+(?=\d)/, '');
+}
+
+// モデル出力の末尾にある選択肢を切り出す。見つからなければ null。
+function splitChoices(text) {
+  const lines = text.split('\n');
+  const isItem = l => ITEM_RE.test(l) && !SEP_RE.test(l);
+
+  // 末尾の「どうしますか？」のような短い行は最大3行まで選択肢側に含める
+  let tail = lines.length;
+  for (let skip = 0; skip <= 3; skip++) {
+    let i = tail, count = 0, first = -1;
+    while (i > 0) {
+      const l = lines[i - 1];
+      if (!l.trim()) { i--; continue; }
+      if (isItem(l)) { count++; first = i - 1; i--; continue; }
+      // 項目の説明が次行に続いている場合（字下げ・括弧書き）
+      if (count > 0 && /^(\s{2,}|\s*[（(])/.test(l)) { i--; continue; }
+      break;
+    }
+    if (count >= 2) {
+      let start = first;
+      for (let n = 0; n < 2; n++) {
+        let j = start;
+        while (j > 0 && !lines[j - 1].trim()) j--;
+        if (j === 0) break;
+        const prev = lines[j - 1];
+        const head = plain(prev);
+        if (SEP_RE.test(prev) || (head.length <= 30 && CHOICE_HEAD_RE.test(head))) start = j - 1;
+        else break;
+      }
+      const options = new Map();
+      for (const l of lines.slice(first)) {
+        const m = l.match(ITEM_RE);
+        if (m && !SEP_RE.test(l)) options.set(normKey(m[1] || m[2]), plain(m[3]));
+      }
+      return {
+        body: lines.slice(0, start).join('\n').replace(/\s+$/, ''),
+        choices: lines.slice(start).join('\n').replace(/^\s*\n+/, '').replace(/\s+$/, ''),
+        options,
+      };
+    }
+    // 末尾の非空行を1行選択肢側に回して再試行
+    while (tail > 0 && !lines[tail - 1].trim()) tail--;
+    if (tail === 0 || lines[tail - 1].length > 60 || isItem(lines[tail - 1])) break;
+    tail--;
+  }
+  return null;
+}
+
+// ユーザーの返答が「3」「c」「C. 〜」で始まっていれば、選んだ選択肢を返す
+function pickedChoice(text, options) {
+  if (!options) return null;
+  const m = text.match(/^\s*([0-9０-９]{1,2}|[A-Za-zＡ-Ｚａ-ｚ]|[①-⑳])\s*[.．。、)）]?\s*(?:\n|$)/);
+  if (!m) return null;
+  const key = normKey(m[1]);
+  return options.has(key) ? { key, label: options.get(key), rest: text.slice(m[0].length).trim() } : null;
+}
+
+function parseSession(text) {
+  const turns = keepSelected(splitTurns(text.replace(/\r\n?/g, '\n')));
+  const out = [];
+  let lastOptions = null;
+  for (const t of turns) {
     let lines = t.lines;
     if (t.role === 'model') lines = lines.filter(l => !NOISE_LINE_RE.test(l));
     const body = lines.join('\n').replace(/^\s*\n+/, '').replace(/\s+$/, '');
     if (!body) continue;
-    const role = t.role === 'model' && isAck(body) ? 'ack' : t.role;
-    out.push({ role, text: body });
+    if (t.role === 'model') {
+      if (isAck(body)) { out.push({ role: 'ack', text: body }); continue; }
+      const c = splitChoices(body);
+      lastOptions = c ? c.options : null;
+      out.push(c ? { role: 'model', text: c.body, choices: c.choices } : { role: 'model', text: body });
+    } else if (t.role === 'user') {
+      out.push({ role: 'user', text: body, picked: pickedChoice(body, lastOptions) });
+      lastOptions = null;
+    } else {
+      out.push({ role: t.role, text: body });
+    }
   }
   // 見出しが一つも無ければ全体を本文として扱う
   if (out.length === 1 && out[0].role === 'preface') out[0].role = 'model';
@@ -240,18 +362,29 @@ function renderModel(text) {
   return `<div class="turn-model">${html.join('')}</div>`;
 }
 
-function renderNote(text, label) {
-  const preview = text.replace(/\s+/g, ' ').slice(0, 60);
+function renderNote(label, preview, bodyHtml) {
   return `<details class="note"><summary><span class="mark">◆ ${label}</span>` +
-    `<span class="preview">${esc(preview)}</span></summary>` +
-    `<div class="body">${esc(text)}</div></details>`;
+    `<span class="preview">${esc(preview.replace(/\s+/g, ' ').slice(0, 60))}</span></summary>` +
+    `<div class="body">${bodyHtml}</div></details>`;
+}
+const linesHtml = text => text.split('\n').map(inline).join('\n');
+
+function renderTurn(t) {
+  if (t.role === 'model') {
+    return (t.text ? renderModel(t.text) : '') +
+      (t.choices ? renderNote('選択肢', plain(t.choices.split('\n').find(l => ITEM_RE.test(l)) || ''), linesHtml(t.choices)) : '');
+  }
+  if (t.role === 'user' && t.picked) {
+    const pick = `${t.picked.key}. ${t.picked.label}`;
+    const preview = '→ ' + pick + (t.picked.rest ? ' ／ ' + t.picked.rest : '');
+    const body = `<strong>→ ${esc(pick)}</strong>` + (t.picked.rest ? '\n\n' + esc(t.picked.rest) : '');
+    return renderNote('指示', preview, body);
+  }
+  return renderNote({ user: '指示', ack: '応答', preface: '前置き' }[t.role] || 'その他', t.text, esc(t.text));
 }
 
 function renderStory(turns) {
-  return turns.map(t =>
-    t.role === 'model' ? renderModel(t.text)
-      : renderNote(t.text, { user: '指示', ack: '応答', preface: '前置き' }[t.role])
-  ).join('');
+  return turns.map(renderTurn).join('');
 }
 
 // ---------- 保存（ブラウザ内） ----------
