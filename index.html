@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>yomu</title>
+<style>
+  :root {
+    --bg: #faf8f3;
+    --fg: #2b2a27;
+    --muted: #8a867c;
+    --line: #e4dfd3;
+    --note-bg: #f1ede3;
+    --accent: #9a6b3f;
+    --font-size: 18px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #1c1b19; --fg: #dedad2; --muted: #8d897f;
+      --line: #34322e; --note-bg: #262522; --accent: #c9a47a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #1c1b19; --fg: #dedad2; --muted: #8d897f;
+    --line: #34322e; --note-bg: #262522; --accent: #c9a47a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: "Hiragino Mincho ProN", "Yu Mincho", "Noto Serif JP", serif;
+  }
+  button, select, textarea, input { font: inherit; font-family: system-ui, sans-serif; font-size: 14px; }
+  button, select {
+    background: transparent; color: var(--fg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 4px 10px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+
+  header {
+    position: sticky; top: 0; z-index: 10; background: var(--bg);
+    border-bottom: 1px solid var(--line); padding: 8px 16px;
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    font-family: system-ui, sans-serif; font-size: 14px;
+  }
+  header .title { font-weight: 600; margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40vw; }
+
+  /* ライブラリ（取り込み画面） */
+  #library { max-width: 720px; margin: 0 auto; padding: 24px 16px; font-family: system-ui, sans-serif; }
+  #library h2 { font-size: 16px; margin: 24px 0 8px; }
+  #library textarea {
+    width: 100%; min-height: 160px; background: var(--note-bg); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 6px; padding: 8px;
+  }
+  #library .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+  #library ul { list-style: none; padding: 0; margin: 0; }
+  #library li {
+    display: flex; gap: 8px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line);
+  }
+  #library li .name { flex: 1; cursor: pointer; }
+  #library li .name:hover { color: var(--accent); }
+  #library li .meta { color: var(--muted); font-size: 12px; }
+  .hint { color: var(--muted); font-size: 13px; line-height: 1.7; }
+
+  /* 本文 */
+  #reader { display: none; }
+  #story {
+    max-width: 40em; margin: 0 auto; padding: 32px 16px 96px;
+    font-size: var(--font-size); line-height: 1.95; letter-spacing: 0.02em;
+  }
+  #story p { margin: 0; white-space: pre-wrap; word-break: break-word; }
+  #story p.blank { height: 1em; }
+  #story h3 { font-size: 1.1em; margin: 1.5em 0 0.5em; }
+  #story hr { border: none; text-align: center; margin: 1.5em 0; }
+  #story hr::after { content: "＊　＊　＊"; color: var(--muted); }
+  .turn-model + .turn-model { margin-top: 1.2em; }
+
+  /* ユーザー指示（折りたたみ） */
+  details.note {
+    margin: 1.2em 0; font-family: system-ui, sans-serif; font-size: 0.78em; line-height: 1.7;
+    color: var(--muted);
+  }
+  details.note summary {
+    cursor: pointer; list-style: none; display: flex; gap: 0.6em; align-items: baseline;
+    user-select: none; padding: 0.2em 0;
+  }
+  details.note summary::-webkit-details-marker { display: none; }
+  details.note summary .mark { color: var(--accent); flex: none; }
+  details.note summary .preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.75; }
+  details.note[open] summary .preview { display: none; }
+  details.note .body {
+    background: var(--note-bg); border-left: 3px solid var(--accent); border-radius: 4px;
+    padding: 0.6em 0.9em; margin-top: 0.3em; color: var(--fg); white-space: pre-wrap; word-break: break-word;
+  }
+  body.no-preview details.note summary .preview { display: none; }
+  body.hide-notes details.note { display: none; }
+
+  /* 縦書き */
+  body.vertical #story {
+    writing-mode: vertical-rl; max-width: none; height: calc(100vh - 60px);
+    overflow-x: auto; overflow-y: hidden; padding: 32px 24px; margin: 0;
+  }
+  body.vertical details.note { margin: 0 1.2em; }
+  body.vertical details.note summary .preview { max-height: 20em; }
+  body.vertical .turn-model + .turn-model { margin-top: 0; margin-right: 1.2em; }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="title" id="title">yomu</span>
+  <span id="reader-controls" style="display:none; gap:8px; flex-wrap:wrap; align-items:center;">
+    <select id="note-mode" title="指示の表示">
+      <option value="fold">指示：折りたたみ</option>
+      <option value="open">指示：全部開く</option>
+      <option value="hide">指示：非表示</option>
+    </select>
+    <button id="toggle-preview" title="折りたたみ時に指示の冒頭を表示">冒頭表示</button>
+    <button id="toggle-vertical">縦書き</button>
+    <button id="font-down">A−</button>
+    <button id="font-up">A＋</button>
+    <button id="export">保存</button>
+    <button id="back">一覧</button>
+  </span>
+  <button id="toggle-theme" title="テーマ切替">◐</button>
+</header>
+
+<section id="library">
+  <h2>セッションを取り込む</h2>
+  <p class="hint">
+    書き出したテキストを読み込むか、下に貼り付けてください。<br>
+    「ユーザー:」「モデル:」「Response:」「Thinking:」などの見出しで発言を区切ります。思考（Thinking）は捨てられます。
+  </p>
+  <div class="row">
+    <input type="file" id="file" accept=".txt,.md,text/plain" multiple>
+  </div>
+  <textarea id="paste" placeholder="ここに貼り付け"></textarea>
+  <div class="row">
+    <input type="text" id="paste-title" placeholder="タイトル（任意）" style="flex:1; padding:4px 8px; background:var(--note-bg); color:var(--fg); border:1px solid var(--line); border-radius:6px;">
+    <button id="paste-add">取り込む</button>
+  </div>
+
+  <h2>保存済み</h2>
+  <ul id="list"></ul>
+  <p class="hint" id="list-empty">まだありません。</p>
+  <p class="hint">保存先はこのブラウザ内だけです。元のテキストファイルは手元に残しておいてください。</p>
+</section>
+
+<section id="reader">
+  <article id="story"></article>
+</section>
+
+<script>
+'use strict';
+
+// ---------- 解析 ----------
+
+// 行頭の見出し → 役割。英語は大文字小文字を区別しない。
+const ROLE_LABELS = {
+  user: ['ユーザー', 'ユーザ', 'あなた', '自分', 'User', 'You', 'Prompt', 'Me'],
+  model: ['モデル', 'Gemini', 'Model', 'Response', 'AI', 'Assistant', '回答', '応答'],
+  thinking: ['Thinking', 'Thoughts', 'Thought', '思考', '思考プロセス', 'Show thinking'],
+};
+const LABEL_TO_ROLE = new Map();
+for (const [role, labels] of Object.entries(ROLE_LABELS)) {
+  for (const l of labels) LABEL_TO_ROLE.set(l.toLowerCase(), role);
+}
+const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const LABEL_RE = new RegExp(
+  '^\\s*(?:#{1,6}\\s*)?(?:\\*\\*)?(' +
+  [...LABEL_TO_ROLE.keys()].sort((a, b) => b.length - a.length).map(escapeRe).join('|') +
+  ')(?:\\*\\*)?\\s*[:：](?:\\*\\*)?\\s?(.*)$', 'i');
+
+function parseSession(text) {
+  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+  const turns = [];
+  let cur = null;
+  for (const line of lines) {
+    const m = line.match(LABEL_RE);
+    if (m) {
+      cur = { role: LABEL_TO_ROLE.get(m[1].toLowerCase()), lines: [] };
+      turns.push(cur);
+      if (m[2].trim()) cur.lines.push(m[2]);
+      continue;
+    }
+    if (!cur) { cur = { role: 'preface', lines: [] }; turns.push(cur); }
+    cur.lines.push(line);
+  }
+  const out = [];
+  for (const t of turns) {
+    if (t.role === 'thinking') continue;
+    const body = t.lines.join('\n').replace(/^\s*\n/, '').replace(/\s+$/, '');
+    if (!body) continue;
+    out.push({ role: t.role, text: body });
+  }
+  // 見出しが一つも無ければ全体を本文として扱う
+  if (out.length === 1 && out[0].role === 'preface') out[0].role = 'model';
+  return out;
+}
+
+// ---------- 描画 ----------
+
+const esc = s => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const inline = s => esc(s).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+
+function renderModel(text) {
+  const html = [];
+  let prevBlank = false;
+  for (const raw of text.split('\n')) {
+    const line = raw.replace(/\s+$/, '');
+    if (!line.trim()) {
+      if (!prevBlank) html.push('<p class="blank"></p>');
+      prevBlank = true;
+      continue;
+    }
+    prevBlank = false;
+    if (/^\s*([-*＊_]\s*){3,}$/.test(line)) { html.push('<hr>'); continue; }
+    const h = line.match(/^\s*#{1,6}\s+(.*)$/);
+    if (h) { html.push(`<h3>${inline(h[1])}</h3>`); continue; }
+    html.push(`<p>${inline(line)}</p>`);
+  }
+  return `<div class="turn-model">${html.join('')}</div>`;
+}
+
+function renderNote(text, label) {
+  const preview = text.replace(/\s+/g, ' ').slice(0, 60);
+  return `<details class="note"><summary><span class="mark">◆ ${label}</span>` +
+    `<span class="preview">${esc(preview)}</span></summary>` +
+    `<div class="body">${esc(text)}</div></details>`;
+}
+
+function renderStory(turns) {
+  return turns.map(t =>
+    t.role === 'model' ? renderModel(t.text)
+      : renderNote(t.text, t.role === 'user' ? '指示' : '前置き')
+  ).join('');
+}
+
+// ---------- 保存（ブラウザ内） ----------
+
+const store = {
+  get(k, d) { try { const v = localStorage.getItem('yomu:' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem('yomu:' + k, JSON.stringify(v)); return true; } catch { return false; } },
+  del(k) { try { localStorage.removeItem('yomu:' + k); } catch {} },
+};
+
+let index = store.get('index', []); // [{id, title, added, chars}]
+let current = null;                 // {id, title, turns}
+
+function addSession(title, text) {
+  const turns = parseSession(text);
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  const chars = turns.filter(t => t.role === 'model').reduce((n, t) => n + t.text.length, 0);
+  const saved = store.set('s:' + id, { title, text });
+  if (saved) {
+    index.unshift({ id, title, added: Date.now(), chars });
+    store.set('index', index);
+    renderList();
+  }
+  openSession({ id: saved ? id : null, title, turns });
+}
+
+function renderList() {
+  const ul = document.getElementById('list');
+  ul.innerHTML = '';
+  document.getElementById('list-empty').style.display = index.length ? 'none' : '';
+  for (const item of index) {
+    const li = document.createElement('li');
+    li.innerHTML = `<span class="name">${esc(item.title)}</span>` +
+      `<span class="meta">本文 ${item.chars.toLocaleString()} 字</span><button>削除</button>`;
+    li.querySelector('.name').onclick = () => {
+      const s = store.get('s:' + item.id, null);
+      if (s) openSession({ id: item.id, title: s.title, turns: parseSession(s.text) });
+    };
+    li.querySelector('button').onclick = () => {
+      if (!confirm(`「${item.title}」を削除しますか？`)) return;
+      store.del('s:' + item.id); store.del('pos:' + item.id);
+      index = index.filter(i => i.id !== item.id);
+      store.set('index', index);
+      renderList();
+    };
+    ul.appendChild(li);
+  }
+}
+
+// ---------- 画面切替・設定 ----------
+
+const $ = id => document.getElementById(id);
+const prefs = Object.assign({ noteMode: 'fold', preview: true, vertical: false, fontSize: 18, theme: '' }, store.get('prefs', {}));
+const savePrefs = () => store.set('prefs', prefs);
+
+function applyPrefs() {
+  document.body.classList.toggle('hide-notes', prefs.noteMode === 'hide');
+  document.body.classList.toggle('no-preview', !prefs.preview);
+  document.body.classList.toggle('vertical', prefs.vertical);
+  document.documentElement.style.setProperty('--font-size', prefs.fontSize + 'px');
+  if (prefs.theme) document.documentElement.dataset.theme = prefs.theme;
+  else delete document.documentElement.dataset.theme;
+  $('note-mode').value = prefs.noteMode;
+  $('toggle-preview').style.opacity = prefs.preview ? 1 : 0.5;
+  $('toggle-vertical').textContent = prefs.vertical ? '横書き' : '縦書き';
+  document.querySelectorAll('details.note').forEach(d => { d.open = prefs.noteMode === 'open'; });
+}
+
+function scroller() { return prefs.vertical ? $('story') : document.scrollingElement; }
+function savePos() {
+  if (!current || !current.id) return;
+  const el = scroller();
+  const max = prefs.vertical ? el.scrollWidth - el.clientWidth : el.scrollHeight - el.clientHeight;
+  const pos = prefs.vertical ? -el.scrollLeft : el.scrollTop; // 縦書きは右端が0で負方向
+  store.set('pos:' + current.id, max > 0 ? pos / max : 0);
+}
+function restorePos() {
+  const r = current && current.id ? store.get('pos:' + current.id, 0) : 0;
+  const el = scroller();
+  if (prefs.vertical) el.scrollLeft = -r * (el.scrollWidth - el.clientWidth);
+  else el.scrollTop = r * (el.scrollHeight - el.clientHeight);
+}
+
+function openSession(s) {
+  current = s;
+  $('story').innerHTML = renderStory(s.turns);
+  $('title').textContent = s.title;
+  $('library').style.display = 'none';
+  $('reader').style.display = 'block';
+  $('reader-controls').style.display = 'flex';
+  applyPrefs();
+  requestAnimationFrame(restorePos);
+}
+
+function closeSession() {
+  savePos();
+  current = null;
+  $('reader').style.display = 'none';
+  $('reader-controls').style.display = 'none';
+  $('library').style.display = '';
+  $('title').textContent = 'yomu';
+  window.scrollTo(0, 0);
+}
+
+let posTimer = 0;
+const queueSavePos = () => { clearTimeout(posTimer); posTimer = setTimeout(savePos, 300); };
+window.addEventListener('scroll', queueSavePos, { passive: true });
+$('story').addEventListener('scroll', queueSavePos, { passive: true });
+window.addEventListener('pagehide', savePos);
+
+$('note-mode').onchange = e => { prefs.noteMode = e.target.value; savePrefs(); applyPrefs(); };
+$('toggle-preview').onclick = () => { prefs.preview = !prefs.preview; savePrefs(); applyPrefs(); };
+$('toggle-vertical').onclick = () => { savePos(); prefs.vertical = !prefs.vertical; savePrefs(); applyPrefs(); requestAnimationFrame(restorePos); };
+$('font-down').onclick = () => { prefs.fontSize = Math.max(12, prefs.fontSize - 1); savePrefs(); applyPrefs(); };
+$('font-up').onclick = () => { prefs.fontSize = Math.min(32, prefs.fontSize + 1); savePrefs(); applyPrefs(); };
+$('toggle-theme').onclick = () => {
+  const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+  const now = prefs.theme || (dark ? 'dark' : 'light');
+  prefs.theme = now === 'dark' ? 'light' : 'dark';
+  savePrefs(); applyPrefs();
+};
+$('back').onclick = closeSession;
+
+// 整形済みの単体HTMLとして保存（指示は折りたたみのまま）
+$('export').onclick = () => {
+  if (!current) return;
+  const css = document.querySelector('style').textContent;
+  const html = `<!doctype html><html lang="ja"><head><meta charset="utf-8">` +
+    `<meta name="viewport" content="width=device-width, initial-scale=1">` +
+    `<title>${esc(current.title)}</title><style>${css}#reader{display:block}</style></head>` +
+    `<body><section id="reader"><article id="story">${renderStory(current.turns)}</article></section></body></html>`;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+  a.download = current.title.replace(/[\\/:*?"<>|]/g, '_') + '.html';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+
+$('file').onchange = async e => {
+  const files = [...e.target.files];
+  for (const f of files) addSession(f.name.replace(/\.(txt|md)$/i, ''), await f.text());
+  e.target.value = '';
+};
+$('paste-add').onclick = () => {
+  const text = $('paste').value;
+  if (!text.trim()) return;
+  const title = $('paste-title').value.trim() || ('貼り付け ' + new Date().toLocaleString('ja-JP'));
+  $('paste').value = ''; $('paste-title').value = '';
+  addSession(title, text);
+};
+
+renderList();
+applyPrefs();
+</script>
+</body>
+</html>
