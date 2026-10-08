@@ -131,7 +131,7 @@
     「ユーザー:」「モデル:」「Response:」「Thinking:」などの見出しで発言を区切ります。思考（Thinking）は捨てられます。
   </p>
   <div class="row">
-    <input type="file" id="file" accept=".txt,.md,text/plain" multiple>
+    <input type="file" id="file" accept=".txt,.md,.markdown,text/plain,text/markdown" multiple>
   </div>
   <textarea id="paste" placeholder="ここに貼り付け"></textarea>
   <div class="row">
@@ -165,10 +165,13 @@ for (const [role, labels] of Object.entries(ROLE_LABELS)) {
   for (const l of labels) LABEL_TO_ROLE.set(l.toLowerCase(), role);
 }
 const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const LABEL_ALT = [...LABEL_TO_ROLE.keys()].sort((a, b) => b.length - a.length).map(escapeRe).join('|');
+// 「ユーザー: 本文」「**User:** 本文」「## Response:」
 const LABEL_RE = new RegExp(
-  '^\\s*(?:#{1,6}\\s*)?(?:\\*\\*)?(' +
-  [...LABEL_TO_ROLE.keys()].sort((a, b) => b.length - a.length).map(escapeRe).join('|') +
-  ')(?:\\*\\*)?\\s*[:：](?:\\*\\*)?\\s?(.*)$', 'i');
+  '^\\s*(?:#{1,6}\\s*)?(?:\\*\\*)?(' + LABEL_ALT + ')(?:\\*\\*)?\\s*[:：](?:\\*\\*)?\\s?(.*)$', 'i');
+// Markdownの見出し・太字だけの行（コロン無し）：「## ユーザー」「**Gemini**」
+const LABEL_HEAD_RE = new RegExp(
+  '^\\s*(?:#{1,6}\\s*(?:\\*\\*)?(' + LABEL_ALT + ')(?:\\*\\*)?|\\*\\*(' + LABEL_ALT + ')\\*\\*)\\s*$', 'i');
 
 function parseSession(text) {
   const lines = text.replace(/\r\n?/g, '\n').split('\n');
@@ -176,10 +179,12 @@ function parseSession(text) {
   let cur = null;
   for (const line of lines) {
     const m = line.match(LABEL_RE);
-    if (m) {
-      cur = { role: LABEL_TO_ROLE.get(m[1].toLowerCase()), lines: [] };
+    const h = !m && line.match(LABEL_HEAD_RE);
+    if (m || h) {
+      const label = m ? m[1] : (h[1] || h[2]);
+      cur = { role: LABEL_TO_ROLE.get(label.toLowerCase()), lines: [] };
       turns.push(cur);
-      if (m[2].trim()) cur.lines.push(m[2]);
+      if (m && m[2].trim()) cur.lines.push(m[2]);
       continue;
     }
     if (!cur) { cur = { role: 'preface', lines: [] }; turns.push(cur); }
@@ -200,13 +205,15 @@ function parseSession(text) {
 // ---------- 描画 ----------
 
 const esc = s => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const inline = s => esc(s).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+const inline = s => esc(s)
+  .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+  .replace(/(^|[^*])\*([^*\s][^*]*?)\*(?!\*)/g, '$1<em>$2</em>');
 
 function renderModel(text) {
   const html = [];
   let prevBlank = false;
   for (const raw of text.split('\n')) {
-    const line = raw.replace(/\s+$/, '');
+    const line = raw.replace(/\s+$/, '').replace(/^\s{0,3}>\s?/, '');
     if (!line.trim()) {
       if (!prevBlank) html.push('<p class="blank"></p>');
       prevBlank = true;
@@ -373,7 +380,7 @@ $('export').onclick = () => {
 
 $('file').onchange = async e => {
   const files = [...e.target.files];
-  for (const f of files) addSession(f.name.replace(/\.(txt|md)$/i, ''), await f.text());
+  for (const f of files) addSession(f.name.replace(/\.(txt|md|markdown)$/i, ''), await f.text());
   e.target.value = '';
 };
 $('paste-add').onclick = () => {
