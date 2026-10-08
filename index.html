@@ -173,6 +173,15 @@ const LABEL_RE = new RegExp(
 const LABEL_HEAD_RE = new RegExp(
   '^\\s*(?:#{1,6}\\s*(?:\\*\\*)?(' + LABEL_ALT + ')(?:\\*\\*)?|\\*\\*(' + LABEL_ALT + ')\\*\\*)\\s*$', 'i');
 
+// 本文から消す行：「（現在のターン数：6）」など
+const NOISE_LINE_RE = /^\s*[（(]\s*現在のターン数\s*[:：]\s*\d+\s*[)）]\s*$/;
+
+// 設定を受け取っただけの短い返答（「〜受領いたしました」など）は本文に入れず折りたたむ
+function isAck(text) {
+  return text.length <= 300 && !/[「『]/.test(text) &&
+    /(受領|承知|了解|かしこまりました|理解しました|把握しました|確認しました)/.test(text);
+}
+
 function parseSession(text) {
   const lines = text.replace(/\r\n?/g, '\n').split('\n');
   const turns = [];
@@ -193,9 +202,12 @@ function parseSession(text) {
   const out = [];
   for (const t of turns) {
     if (t.role === 'thinking') continue;
-    const body = t.lines.join('\n').replace(/^\s*\n/, '').replace(/\s+$/, '');
+    let lines = t.lines;
+    if (t.role === 'model') lines = lines.filter(l => !NOISE_LINE_RE.test(l));
+    const body = lines.join('\n').replace(/^\s*\n+/, '').replace(/\s+$/, '');
     if (!body) continue;
-    out.push({ role: t.role, text: body });
+    const role = t.role === 'model' && isAck(body) ? 'ack' : t.role;
+    out.push({ role, text: body });
   }
   // 見出しが一つも無ければ全体を本文として扱う
   if (out.length === 1 && out[0].role === 'preface') out[0].role = 'model';
@@ -238,7 +250,7 @@ function renderNote(text, label) {
 function renderStory(turns) {
   return turns.map(t =>
     t.role === 'model' ? renderModel(t.text)
-      : renderNote(t.text, t.role === 'user' ? '指示' : '前置き')
+      : renderNote(t.text, { user: '指示', ack: '応答', preface: '前置き' }[t.role])
   ).join('');
 }
 
